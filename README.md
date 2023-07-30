@@ -1,7 +1,7 @@
 - 👋 Hi, I’m @WeNRobortella
 - 👀 I’m interested in Games
 - 🌱 I’m currently learning Unity
-- 💞️ I’m looking to collaborate on Gaem Development
+- 💞️ I’m looking to collaborate on Game Development
 - 📫 How to reach me wnrobortella@gmail.com
 
 <!---
