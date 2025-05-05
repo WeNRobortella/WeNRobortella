@@ -1,0 +1,210 @@
+-- pre-hashing ids improves performance
+local msg_contact_point_response = hash("contact_point_response")
+local msg_animation_done = hash("animation_done")
+local group_obstacle = hash("ground")
+local anim_walk = hash("walk")
+local anim_idle = hash("idle")
+local anim_jump = hash("jump")
+local anim_fall = hash("fall")
+
+if false then
+    require("game.characters.lobisomem.lobisomem")
+    require("game.characters.vampiro.vampiro")
+    require("game.characters.fantasma")
+    require("game.characters.esqueleto")
+end
+
+local characters = {
+	lobisomem = "game.characters.lobisomem.lobisomem",
+	vampiro = "game.characters.vampiro.vampiro",
+	fantasma = "game.characters.fantasma",
+	esqueleto = "game.characters.esqueleto"
+}
+
+
+function init(self)
+	-- this lets us handle input in this script
+	msg.post(".", "acquire_input_focus")
+
+	-- activate camera attached to the player collection
+	-- this will send camera updates to the render script
+	msg.post("#camera", "acquire_camera_focus")
+	msg.post("@render:", "use_camera_projection")
+
+	-- initial player velocity
+	self.velocity = vmath.vector3(0, 0, 0)
+	-- the direction the player is facing
+	self.facing_direction = 0
+	-- support variable to keep track of collisions and separation
+	self.correction = vmath.vector3()
+	-- if the player stands on ground or not
+	self.ground_contact = false
+	-- the currently playing animation
+	self.anim = nil
+	self.loaded = nil
+	self.position = go.get_position()
+	self.ability_denied = false
+	self.input_buffer = {}
+	self.locked_inputs = {}
+	self.inputs_locked = false
+	self.ask_callback = false
+	self.character_state = {
+		walking = false,
+		jumping = false,
+		flying = false,
+		flying_x = false,
+		flying_y = false,
+		ethereal = false,
+		collision = true
+	}
+	local vamp = go.get_id()
+	print(vamp)
+	self.what_character = "vampiro"
+	self.character = require(characters[self.what_character])
+end
+
+local function play_animation(self, anim)
+	-- only play animations which are not already playing
+	if self.anim ~= anim then
+		-- tell the sprite to play the animation
+		sprite.play_flipbook("#sprite", anim)
+		-- remember which animation is playing
+		self.anim = anim
+	end
+end
+
+local function update_animations(self)
+	-- make sure the player character faces the right way
+	sprite.set_hflip("#sprite", self.facing_direction < 0)
+	-- make sure the right animation is playing
+		if self.ground_contact then
+			if self.character_state["walking"] then
+				play_animation(self, anim_walk)
+			elseif not self.input_buffer[self.character.input_left] and
+			not self.input_buffer[self.character.input_right] then
+				play_animation(self, anim_idle)
+			end
+		else
+			if self.character_state["jumping"] then
+				play_animation(self, anim_jump)
+			elseif not self.character_state["jumping"] then
+				play_animation(self, anim_fall)
+			end
+		end
+end
+
+function fixed_update(self, dt)
+	-- apply gravity
+	self.velocity.y = self.velocity.y + self.character.gravity * dt
+
+	-- move player
+	local pos = go.get_position()
+	pos = pos + self.velocity * dt
+	go.set_position(pos)
+
+	-- update animations based on state (ground, air, move and idle)
+	update_character_state(self)
+	update_animations(self)
+	-- reset volatile state
+	self.correction = vmath.vector3()
+	self.ground_contact = false
+	self.wall_contact = false
+	-- if self.ask_callback then
+	-- 	self.velocity = vmath.vector3(0, 0, 0)
+	-- 	self.ask_callback = false
+	-- end
+	-- if self.inputs_locked and
+	-- next(self.input_buffer) ~= nil then
+	-- 	for k in pairs(self.input_buffer) do
+	-- 		self.input_buffer[k] = nil
+	-- 	end
+	-- end
+end
+
+-- https://defold.com/manuals/physics/#resolving-kinematic-collisions
+local function handle_obstacle_contact(self, normal, distance)
+	if distance > 0 then
+		-- First, project the accumulated correction onto
+		-- the penetration vector
+		local proj = vmath.project(self.correction, normal * distance)
+		if proj < 1 then
+			-- Only care for projections that does not overshoot.
+			local comp = (distance - distance * proj) * normal
+			-- Apply compensation
+			go.set_position(go.get_position() + comp)
+			-- Accumulate correction done
+			self.correction = self.correction + comp
+		end
+	end
+
+	-- collided with a wall
+	-- stop horizontal movement
+	if math.abs(normal.x) > 0.7 then
+		self.wall_contact = true
+		self.velocity.x = 0
+	end
+	-- collided with the ground
+	-- stop vertical movement
+	if normal.y > 0.7 then
+		self.ground_contact = true
+		self.velocity.y = 0
+	end
+	-- collided with the ceiling
+	-- stop vertical movement
+	if normal.y < -0.7 then
+		self.velocity.y = 0
+	end
+end
+
+function on_message(self, message_id, message, sender)
+	-- check if we received a contact point message
+	if message_id == msg_contact_point_response then
+		-- check that the object is something we consider an obstacle
+		if message.group == group_obstacle then
+			handle_obstacle_contact(self, message.normal, message.distance)
+		end
+	end
+end
+
+function lock_input(self, input, time)
+	self.locked_inputs[input] = true
+	timer.delay(time, false, function()
+		self.locked_inputs[input] = nil
+	end)
+end
+
+function lock_inputs(self, input, time)
+	self.inputs_locked = true
+	timer.delay(time, false, function() self.character.cooldown(self, input) end)
+end
+
+local function update_state(table, key, state)
+	if table[key] ~= state then
+		table[key] = state
+	end
+end
+
+function update_character_state(self)
+	if self.character_state.collision ~= self.character_state.ethereal then
+		msg.post("#collisionobject", self.character_state.ethereal and "disable" or "enable")
+		self.character_state.collision = self.character_state.ethereal
+	end
+	update_state(self.character_state, "flying", self.character.gravity == 0)
+	if not self.character_state.flying then
+		update_state(self.character_state, "flying_x", false)
+		update_state(self.character_state, "flying_x", false)
+		update_state(self.character_state, "walking", self.velocity.x ~= 0)
+		update_state(self.character_state, "jumping", self.velocity.y > 0)
+	else
+		update_state(self.character_state, "walking", false)
+		update_state(self.character_state, "jumping", false)
+		update_state(self.character_state, "flying_x", self.velocity.x ~= 0)
+		update_state(self.character_state, "flying_y", self.velocity.y ~= 0)
+	end
+end
+
+function on_input(self, action_id, action)
+	if self.character and self.character.on_input then
+		self.character.on_input(self, action_id, action)
+	end
+end
